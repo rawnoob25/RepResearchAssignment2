@@ -1,0 +1,204 @@
+---
+title: "What types of storms have the most dismal public health and economic outcomes?: Exploring the NOAA Storm Database"
+output: 
+  html_document: 
+    fig_height: 4
+    highlight: pygments
+    theme: spacelab
+---
+
+## Synopsis  
+Data in the NOAA storm database is used to explore what types of storms have the largest impact on human lives and what types of storms have the largest economic impact. Impact on human lives takes into account both fatalities and injuries; a fatality receives a weight of 3 times that of an injury. Economic impacts considered are total property damage expenses and total crop damage expenses. Each of these expenses is considered separately. 
+
+
+## Load packages  
+```{r load-pkgs, message = FALSE}
+library(magrittr)
+library(R.utils)
+library(dplyr)
+library(knitr)
+library(ggplot2)
+```
+
+
+
+## Note on reproducibility    
+***R Version 3.3.3 using Windows 10 was used for this analysis. This impacts the downloading of the data and loading into R, but should not impact either the processing or the analysis once the data has been loaded into R. The locale for this analysis was the United States. Here's the relevant information from a call to the sessionInfo() function.***
+
+* Information related to the R Version
+
+```{r sessionInfo-version, cache = TRUE}
+sess<-sessionInfo()
+sess$R.version%>%unlist()
+```
+
+
+* Information related to the platform
+
+```{r sessionInfo-platform}
+sess$platform
+```
+
+* Information related to the locale
+
+```{r sessionInfo-locale}
+sess$locale
+```
+
+* Information related to the operating system
+
+```{r sessionInfo-OS}
+sess$running
+```
+
+
+
+## Data processing
+
+First, the original data file (.csv.bz2) is downloaded. The data is then read into R from the file connection corresponding to the to the downloaded .csv.bz2 file that exists in the working directory (this connection is constructed using the bzfile function) using the read.csv function. 
+
+Next all of the columns relevant for our analysis are extracted into a new dataframe (relevant_noaa).
+
+Next, the computations required to assess the types of events that are most harmful to human health are performed. Note that a population damage score is assigned that treats fatalities as three times as damaging as injuries and a table of the types of events that have the 10 highest population total damage scores are outputted along with the sum of their damage scores (this sum is called the "Population Impact Index").
+
+At this point, it's time to transform the data so that property expenses and crop expenses can be properly enumerated. The crop expense exponent and property expense exponents are all converted to integers such that the following mapping scheme is followed:  
+* "1"->1  
+* "2","h","H"->2  
+* "3","k"","K"->3  
+* "4"->4  
+* "5"->5  
+* "6","m","M"->6  
+* "7"->7  
+* "8"->8  
+* "9","B"->9  
+* "","?","+","-"->0
+
+This scheme was determined by examining the unique values in the union of the levels of the PROPDMGEXP and the CROPDMGEXP variable in the original dataset.
+
+Then, these exponents are combined with the mantissae in the variables PROPDMG and CROPDMG to respectively generate the values for property damage and crop damage for each storm. Exponents are base-10 exponents. These values are expenses in US dollars.
+
+Next, the computations required to assess the types of events that result in the most property damage expeneses are performed.
+
+Next, the computations required to assess the types of events that result in the most crop damage expenses are performed.
+
+```{r load-data-process-data,cache = TRUE}
+zippedFN<-"StormData.csv.bz2"
+if(!file.exists(zippedFN)){
+    download.file(url = "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2",destfile= zippedFN,mode="wb")
+}
+
+if(!exists("noaa")){
+  noaa<-read.csv(bzfile(zippedFN))
+}
+
+
+relevant_noaa<-noaa%>%select_(.dots=c('EVTYPE','FATALITIES','INJURIES','PROPDMG','PROPDMGEXP','CROPDMG','CROPDMGEXP'))
+
+
+
+relevant_noaa<-relevant_noaa%>%mutate_(pop_damage_score = ~ 3*FATALITIES+INJURIES)
+
+
+
+worstForHumanHealth<-relevant_noaa%>%group_by_(~EVTYPE)%>%summarize_(Pop_Impact_Index= ~sum(pop_damage_score))%>%arrange(desc(Pop_Impact_Index))%>%head(10)
+
+worstForHumanHealthTable<-worstForHumanHealth%>%rename("Event Type"=EVTYPE,"Population Impact Index"=Pop_Impact_Index)
+
+kable(worstForHumanHealthTable)
+
+propDamageExponents<-relevant_noaa$PROPDMGEXP%>%levels
+cropDamageExponents<-relevant_noaa$CROPDMGEXP%>%levels
+
+damageExponents<-union(propDamageExponents,cropDamageExponents)
+print(damageExponents) 
+
+relevant_noaa$PROPDMGEXP<-as.character(relevant_noaa$PROPDMGEXP)
+relevant_noaa$CROPDMGEXP<-as.character(relevant_noaa$CROPDMGEXP)
+
+#above values clued me in to how to write my toExponent function (below)
+
+
+
+
+options(warn=-1) #globally suppress warnings for now; the toExponent() function involves the coercion of many character values to NA when as.numeric is called on them; each such call generates a warning message
+
+toExponent<-function(x){
+  if(x %in% paste0("",0:9)){
+    val<-as.numeric(x)
+  }else if(!is.na(as.numeric(x))){
+    cat("param was:",x,"\n",sep="")
+    stop("invalid parameter:")
+  }else if(x %in% c("h","H")){
+    val<-2
+  }else if(x %in% c("k","K")){
+    val<-3
+  }else if(x %in% c("m","M")){
+    val<-6
+  }else if(x=="B"){
+    val<-9
+  }else if(x %in% c("","?","+","-")){
+    val<-0
+  }else{
+    cat("param was:",x,"\n",sep="")
+    stop("invalid parameter")
+  }
+  if(!(val %in% 0:9)){
+    cat("val is now:",val,"\n",sep="")
+    stop("unexpected error")
+  }
+  return (val)
+}
+
+propExp<-sapply(relevant_noaa$PROPDMGEXP,FUN=toExponent)
+relevant_noaa$propertyDamageExp<-propExp
+
+cropExp<-sapply(relevant_noaa$CROPDMGEXP,FUN=toExponent)
+relevant_noaa$cropDamageExp<-cropExp
+
+relevant_noaa$propDamage<-(relevant_noaa$PROPDMG)*(10**(relevant_noaa$propertyDamageExp))
+
+relevant_noaa$cropDamage<-(relevant_noaa$CROPDMG)*(10**(relevant_noaa$cropDamageExp))
+
+relevant_noaa<-relevant_noaa%>%select_(.dots = c('EVTYPE','FATALITIES','INJURIES','pop_damage_score','propDamage','cropDamage'))
+
+worstForProperty<-relevant_noaa%>%group_by_(~EVTYPE)%>%summarize_(Property_Cost= ~sum(propDamage))%>%arrange(desc(Property_Cost))%>%head(10)
+
+worstForPropertyTable<-worstForProperty%>%rename("Event Type"=EVTYPE,"Property Expenses"=Property_Cost)
+
+kable(worstForPropertyTable)
+
+worstForCrops<-relevant_noaa%>%group_by_(~EVTYPE)%>%summarize_(Crop_Cost= ~sum(cropDamage))%>%arrange(desc(Crop_Cost))%>%head(10)
+
+worstForCropsTable<-worstForCrops%>%rename("Event Type"=EVTYPE,"Crop Expenses"=Crop_Cost)
+
+kable(worstForCropsTable)
+
+```
+
+
+## Results 
+
+Below is a bar chart of the 10 types of storms with the  worst outcomes on human life (taking into account both fatalities and injuries- a fatality receives a weight of 3 times that of an injury).
+
+```{r}
+ggplot(data=worstForHumanHealth,aes(x=EVTYPE,y=Pop_Impact_Index))+geom_bar(stat="identity",col="black",fill="blue")+coord_flip()+labs(title="Population Impact Indices of\nTen Storm Types With Wortst\nImpact On Human Health",x="Event Type",y="Population Impact Index")
+```
+
+***Tornadoes are clearly the most hazardous to human lives and health.***
+
+
+Below is a bar chart of the 10 types of storms that result in the largest property damage expenses.
+
+```{r}
+ggplot(data=worstForProperty,aes(x=EVTYPE,y=Property_Cost))+geom_bar(stat="identity",col="black",fill="red")+coord_flip()+labs(title="Aggregate Property Damage Expense ($US)\n by Storm Type",x="Event Type",y="Expense ($US)")
+```
+
+***Floods clearly result in the most expenses stemming from property damage.***
+
+Below is a bar chart of the 10 types of storms that result in the largest crop damage expenses.
+
+```{r}
+ggplot(data=worstForCrops,aes(x=EVTYPE,y=Crop_Cost))+geom_bar(stat="identity",col="black",fill="red")+coord_flip()+labs(title="Aggregate Crop Damage Expense ($US)\n by Storm Type",x="Event Type",y="Expense ($US)")
+```
+
+***Drought clearly results in the most expenses stemming from crop damage.***
